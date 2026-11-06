@@ -60,3 +60,4 @@ A lightweight, 100% client-side tool to export and backup full chat history from
 
 ### 📄 License
 This project is open-sourced under the [MIT License](LICENSE).
+
