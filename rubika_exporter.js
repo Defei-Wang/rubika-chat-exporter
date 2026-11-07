@@ -1,22 +1,43 @@
 /**
- * Rubika Full-Timeline Exporter V11 (Anti-Lag, Zero-Error & Smart Date Backfill)
- * استخراج‌کننده فوق‌سریع و بدون خطا تاریخچه چت روبیکا (نسخه ۱۱)
+ * Rubika Full-Timeline Exporter V12 (Fast-Network, Zero-Media-Timeout & Strict Time Sort)
+ * استخراج‌کننده فوق‌سریع و بدون توقف تاریخچه چت روبیکا با مسدودسازی هوشمند ترافیک رسانه
  * 
  * Languages: English & فارسی (Persian)
  * License: MIT
  */
-(async function exportRubikaV11() {
+(async function exportRubikaV12() {
     console.clear();
-    console.log("🚀 [Rubika V11] Initializing Ultra-Fast Exporter / در حال راه‌اندازی استخراج‌کننده فوق‌سریع...");
+    console.log("🚀 [Rubika V12] Initializing Fast Network & Zero-Timeout Mode / در حال راه‌اندازی حالت فوق‌سریع...");
 
-    // 1. Suppress Angular's async checkMedia/addPreload2 appendChild errors on pruned DOM nodes
+    // 1. Instantly fail GetFile.ashx / media requests so they don't block the 6-connection HTTP pool or freeze on 5x retries
+    // مسدودسازی فوری درخواست‌های فایل‌های رسانه‌ای سنگین جهت خالی ماندن خطوط اتصال برای بارگذاری متن پیام‌ها
+    const _open = XMLHttpRequest.prototype.open;
+    const _send = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function (m, url, ...rest) {
+        this.__blk = String(url).includes('GetFile.ashx') || String(url).includes('/stream/');
+        return _open.call(this, m, url, ...rest);
+    };
+    XMLHttpRequest.prototype.send = function (...a) {
+        if (this.__blk) {
+            setTimeout(() => {
+                try {
+                    this.status = 500;
+                    this.dispatchEvent(new ProgressEvent('error'));
+                } catch(e) {}
+            }, 0);
+            return;
+        }
+        return _send.apply(this, a);
+    };
+
+    // 2. Suppress Angular's async checkMedia/addPreload2 appendChild errors on pruned DOM nodes
     const origErrorHandler = window.onerror;
     window.onerror = function(msg) {
-        if (typeof msg === 'string' && msg.includes('appendChild')) return true;
+        if (typeof msg === 'string' && (msg.includes('appendChild') || msg.includes('GetFile') || msg.includes('timeout'))) return true;
         return origErrorHandler ? origErrorHandler.apply(this, arguments) : false;
     };
 
-    // 2. Hide media & disable animations/transitions via CSS
+    // 3. Hide media & disable heavy animations via CSS
     if (!document.getElementById('rubika-kill-media')) {
         const s = document.createElement('style');
         s.id = 'rubika-kill-media';
@@ -30,14 +51,14 @@
         document.head.appendChild(s);
     }
 
-    // 3. Prevent media elements from auto-playing
+    // 4. Prevent media elements from auto-playing
     HTMLMediaElement.prototype.play = function() {
         this.muted = true;
         this.pause();
         return Promise.resolve();
     };
 
-    // 4. Strip media sources safely (keep img shells so Angular's checkMedia won't throw null errors)
+    // 5. Strip media sources safely
     function purgeAndMarkMedia(root = document) {
         root.querySelectorAll('video, audio').forEach(el => {
             try {
@@ -48,7 +69,7 @@
                 el.pause();
                 el.removeAttribute('src');
                 el.load();
-                el.remove(); // Must remove video/audio to avoid Chrome 7844 WebMediaPlayer limit
+                el.remove();
             } catch (e) {}
         });
 
@@ -64,7 +85,7 @@
         });
     }
 
-    // 5. Locate active chat scrollable container
+    // 6. Locate active chat scrollable container
     const chatScrollEl = (function() {
         const scrollables = Array.from(document.querySelectorAll('div.scrollable-y, div.bubbles-inner, .bubbles, .sidebar-slider-item'));
         const valid = scrollables.filter(el => el.querySelector('.bubble') && el.scrollHeight > el.clientHeight);
@@ -81,15 +102,26 @@
     const partnerName = partnerNameEl?.textContent?.trim() || "Contact";
     const myName = "You";
 
-    // 6. Persistent LocalStorage Checkpointing (Compatible with V10 key)
+    // 7. Auto-merge ALL historical keys (v9, v10, v11, etc.) into unified map
+    // ترکیب و بازیابی خودکار تمامی نسخه‌های قبلی ذخیره شده در مرورگر
+    let collectedMessages = new Map();
+    try {
+        let allKeys = Object.keys(localStorage).filter(k => k.includes('rubika_saved_chat'));
+        allKeys.forEach(k => {
+            try {
+                let data = JSON.parse(localStorage.getItem(k) || "{}");
+                for (const [id, val] of Object.entries(data)) {
+                    collectedMessages.set(id, val);
+                }
+            } catch(e) {}
+        });
+    } catch(e) {}
+
     const STORAGE_KEY = `rubika_saved_chat_v10_${partnerName}`;
-    let savedLocal = {};
-    try { savedLocal = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); } catch (e) {}
-    let collectedMessages = new Map(Object.entries(savedLocal));
-    let pendingDateMids = new Set(); // Track messages waiting for upper date banner
+    let pendingDateMids = new Set();
     let unsavedCount = 0;
 
-    // 7. Floating Bilingual Status UI (English & Persian)
+    // 8. Floating Bilingual Status UI
     let badge = document.getElementById('rubika-turbo-badge') || document.createElement('div');
     badge.id = 'rubika-turbo-badge';
     badge.style.cssText = `
@@ -107,14 +139,14 @@
     function updateBadge(enStatus, faStatus, domCount = 0) {
         badge.innerHTML = `
             <div style="font-weight: bold; font-size: 14px; margin-bottom: 4px;">
-                ⚡ <b>Rubika V11:</b> <span style="color:#38bdf8;">${collectedMessages.size}</span> msgs 
+                ⚡ <b>Rubika V12:</b> <span style="color:#38bdf8;">${collectedMessages.size}</span> msgs 
                 <span style="font-size: 11px; color:#94a3b8; font-weight: normal;">(DOM: ${domCount})</span>
             </div>
             <div style="font-size: 11px; color: #cbd5e1;">
                 ${enStatus || "Fetching historical messages..."}
             </div>
             <div style="font-size: 11px; color: #94a3b8; direction: rtl; text-align: right; margin-top: 3px; font-family: 'Vazirmatn', Tahoma, sans-serif;">
-                ${faStatus || "در حال واکشی پیام‌های قبلی..."}
+                ${faStatus || "در حال دریافت پرسرعت پیام‌ها..."}
             </div>
             <div style="font-size: 10px; color: #38bdf8; margin-top: 6px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 4px;">
                 👉 Click to Stop & Download TXT / برای توقف و دانلود کلیک کنید
@@ -129,7 +161,6 @@
     badge.onclick = stopAndExport;
     window.stopExport = stopAndExport;
 
-    // Throttled disk persistence: only save every 500 messages or on finish to prevent JSON.stringify lag at 7000+ msgs
     function persistToDisk(force = false) {
         if (!force && unsavedCount < 500) return;
         try {
@@ -151,7 +182,7 @@
         return text || "";
     }
 
-    // 8. Parse text, backfill dates & strictly prune DOM
+    // 9. Process DOM & Date Backfill
     function processAndPruneDOM() {
         purgeAndMarkMedia(chatScrollEl);
 
@@ -166,7 +197,6 @@
                 return;
             }
 
-            // If we now have a date banner and this bubble was previously extracted without date, update it
             if (b.dataset.extracted === 'full') return;
             if (b.dataset.extracted === 'partial' && activeDateStr && b.dataset.savedMid) {
                 let mid = b.dataset.savedMid;
@@ -229,7 +259,6 @@
             b.dataset.extracted = activeDateStr ? 'full' : 'partial';
         });
 
-        // Backfill any pruned partial messages once their upper date banner finally scrolls into view
         if (activeDateStr && pendingDateMids.size > 0) {
             for (const mid of pendingDateMids) {
                 let line = collectedMessages.get(mid);
@@ -241,7 +270,7 @@
             pendingDateMids.clear();
         }
 
-        // Strict Pruning: Remove ALL processed bubbles beyond top 55 (even 'partial' ones, preventing DOM 155+ buildup)
+        // Strict Pruning: Keep only top 55 bubbles in DOM
         if (bubbles.length > 75) {
             const toRemove = bubbles.slice(55);
             toRemove.forEach(b => {
@@ -255,72 +284,81 @@
         return { newCount, domRemaining: chatScrollEl.querySelectorAll('.bubble').length };
     }
 
-    // 9. Constant-speed upward scroll loop
+    // 10. Reactive Waiting (No rigid delay; resumes immediately when new messages appear)
+    async function waitForNew(prevCount, maxMs = 2500) {
+        const t0 = performance.now();
+        while (performance.now() - t0 < maxMs) {
+            await new Promise(r => setTimeout(r, 40));
+            if (chatScrollEl.querySelectorAll('.bubble').length !== prevCount) return true;
+        }
+        return false;
+    }
+
+    // 11. Ultra-Fast Scroll Loop
     let stuckCount = 0;
-    let lastTopBubbleSignature = "";
-
     while (isRunning) {
-        let { newCount, domRemaining } = processAndPruneDOM();
-        updateBadge(
-            "Fetching historical messages...", 
-            "در حال واکشی پیام‌های قبلی...", 
-            domRemaining
-        );
+        const { domRemaining } = processAndPruneDOM();
+        updateBadge("Fast pulling historical messages...", "در حال دریافت پرسرعت پیام‌ها...", domRemaining);
 
+        const before = chatScrollEl.querySelectorAll('.bubble').length;
         chatScrollEl.scrollTop = 0;
         chatScrollEl.dispatchEvent(new Event('scroll', { bubbles: true }));
 
-        await new Promise(r => setTimeout(r, 700));
+        const got = await waitForNew(before, 2500);
 
-        let resAfter = processAndPruneDOM();
-        let firstBubble = chatScrollEl.querySelector('.bubble:not(.service)');
-        let currentTopSig = firstBubble ? (firstBubble.getAttribute('data-mid') || firstBubble.textContent.trim().slice(0, 30)) : "";
-
-        if (newCount > 0 || resAfter.newCount > 0 || (currentTopSig && currentTopSig !== lastTopBubbleSignature)) {
-            lastTopBubbleSignature = currentTopSig;
+        const res = processAndPruneDOM();
+        if (got || res.newCount > 0) {
             stuckCount = 0;
             chatScrollEl.scrollTop = 100;
-            chatScrollEl.dispatchEvent(new Event('scroll', { bubbles: true }));
         } else {
             stuckCount++;
             chatScrollEl.scrollTop = 150;
-            chatScrollEl.dispatchEvent(new Event('scroll', { bubbles: true }));
             await new Promise(r => setTimeout(r, 140));
             chatScrollEl.scrollTop = 0;
-            chatScrollEl.dispatchEvent(new Event('scroll', { bubbles: true }));
-
-            if (stuckCount >= 10) {
+            if (stuckCount >= 8) {
                 console.log("🎉 Reached the earliest historical message! / به ابتدایی‌ترین پیام تاریخچه چت رسیدید!");
                 break;
             }
         }
     }
 
-    // 10. Download output file with bilingual status
+    // 12. Robust Chronological Sorting & Download
+    // مرتب‌سازی زمانی دقیق بر اساس متن تاریخ [YYYY-MM-DD HH:MM] برای جلوگیری کامل از هرگونه به‌هم‌ریختگی
     function finishDownload() {
         window.onerror = origErrorHandler;
-        persistToDisk(true); // Force final save to localStorage
+        persistToDisk(true);
         badge.innerHTML = `
             <div style="font-weight: bold; color: #4ade80; font-size: 14px;">
                 ✅ Saved ${collectedMessages.size} messages!
             </div>
             <div style="font-size: 11px; color: #f8fafc; margin-top: 3px;">
-                Downloading TXT file...
+                Sorting & Downloading TXT file...
             </div>
             <div style="font-size: 11px; color: #94a3b8; direction: rtl; text-align: right; margin-top: 2px;">
-                ${collectedMessages.size} پیام ذخیره شد. در حال شروع دانلود فایل...
+                ${collectedMessages.size} پیام ذخیره شد. در حال مرتب‌سازی و دانلود فایل...
             </div>
         `;
         badge.style.borderColor = "#4ade80";
 
-        let entries = Array.from(collectedMessages.entries());
-        entries.sort((a, b) => {
-            let numA = Number(a[0]), numB = Number(b[0]);
-            if (!isNaN(numA) && !isNaN(numB)) return numA - numB;
-            return 0;
+        let lines = Array.from(collectedMessages.values());
+
+        // Smart Timestamp-based Chronological Sorter:
+        // Extracts [YYYY-MM-DD HH:MM] from the formatted line and sorts ascending
+        lines.sort((a, b) => {
+            let matchA = a.match(/^\[(\d{4}-\d{2}-\d{2})?\s*(\d{1,2}:\d{2})?\]/);
+            let matchB = b.match(/^\[(\d{4}-\d{2}-\d{2})?\s*(\d{1,2}:\d{2})?\]/);
+            
+            let dateA = matchA ? (matchA[1] || "1970-01-01") : "1970-01-01";
+            let timeA = matchA ? (matchA[2] || "00:00") : "00:00";
+            let stampA = `${dateA} ${timeA.padStart(5, '0')}`;
+
+            let dateB = matchB ? (matchB[1] || "1970-01-01") : "1970-01-01";
+            let timeB = matchB ? (matchB[2] || "00:00") : "00:00";
+            let stampB = `${dateB} ${timeB.padStart(5, '0')}`;
+
+            return stampA.localeCompare(stampB);
         });
 
-        let lines = entries.map(e => e[1]);
         let blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
         let url = URL.createObjectURL(blob);
         let a = document.createElement('a');
