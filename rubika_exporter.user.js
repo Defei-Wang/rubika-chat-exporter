@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Rubika Chat Exporter (Fast & Safe) | استخراج چت روبیکا
 // @namespace    https://github.com/Defei-Wang/rubika-chat-exporter
-// @version      2.0.0
-// @description  Export complete chat history from Rubika Web into a clean text file with zero freeze, auto-pruning, and live speed meter.
+// @version      2.1.0
+// @description  Export complete chat history from Rubika Web into a clean text file with total media suppression, zero freeze, and live speed meter.
 // @description:fa استخراج و دانلود کامل تاریخچه پیام‌های روبیکا وب به صورت فایل متنی مرتب و سریع بدون افت سرعت.
 // @author       Defei Wang
 // @match        https://web.rubika.ir/*
@@ -15,10 +15,11 @@
 (function() {
     'use strict';
 
-    // 1. Zero-Delay Media Interception (Prevents WebMediaPlayer Chrome limits from the start)
+    // 1. Hardcore Media Interception (Prevents ANY video, audio, or canvas from mounting)
     const origCreate = document.createElement;
     document.createElement = function(tag, opt) {
-        if (typeof tag === 'string' && (tag.toLowerCase() === 'video' || tag.toLowerCase() === 'audio')) {
+        let t = typeof tag === 'string' ? tag.toLowerCase() : '';
+        if (t === 'video' || t === 'audio') {
             let fake = origCreate.call(document, 'div');
             fake.play = () => Promise.resolve();
             fake.pause = () => {};
@@ -28,11 +29,32 @@
         return origCreate.apply(this, arguments);
     };
 
-    // Inject styles as early as possible
+    HTMLMediaElement.prototype.play = function() { return Promise.resolve(); };
+
+    // 2. Comprehensive CSS: Kill all images, GIFs, stickers, canvas, and CSS backgrounds
     const style = document.createElement('style');
     style.id = 'rubika-exporter-styles';
     style.textContent = `
-        video, audio, [class*="video"], canvas { display: none !important; }
+        /* Complete media suppression */
+        img:not(.emoji), 
+        canvas, 
+        video, 
+        audio, 
+        .media-photo,
+        .media-video,
+        .media-round,
+        [class*="photo"], 
+        [class*="video"], 
+        [class*="gif"], 
+        [class*="sticker"],
+        [class*="media-container"],
+        [style*="background-image"]:not(.emoji) { 
+            display: none !important; 
+            background-image: none !important; 
+            animation: none !important; 
+            transition: none !important;
+        }
+
         #rubika-app-btn {
             position: fixed; top: 12px; right: 18px; z-index: 9999999;
             background: linear-gradient(135deg, #0ea5e9, #2563eb);
@@ -54,7 +76,7 @@
     `;
     (document.head || document.documentElement).appendChild(style);
 
-    // 2. Add Floating UI once DOM is ready
+    // 3. Add Floating UI once DOM is ready
     window.addEventListener('DOMContentLoaded', initUI);
     window.addEventListener('load', initUI);
 
@@ -76,7 +98,7 @@
             .find(el => el.querySelector('.bubble') && el.scrollHeight > el.clientHeight);
 
         if (!chatScrollEl) {
-            alert("⚠️ Please open a chat conversation first!\n\n⚠️ لطفاً ابتدا یک صفحه چت را باز کنید.");
+            alert("⚠️ Please open a chat window first! / لطفاً ابتدا پنجره چت را باز کنید.");
             initUI();
             return;
         }
@@ -165,8 +187,12 @@
         }
 
         function scrapeDOM() {
-            chatScrollEl.querySelectorAll('video, audio').forEach(el => el.remove());
-            chatScrollEl.querySelectorAll('.bubble img:not(.emoji)').forEach(img => img.removeAttribute('src'));
+            // Strip any remaining media or canvas
+            chatScrollEl.querySelectorAll('video, audio, canvas').forEach(el => el.remove());
+            chatScrollEl.querySelectorAll('.bubble img:not(.emoji)').forEach(img => {
+                img.removeAttribute('src');
+                img.removeAttribute('srcset');
+            });
 
             let bubbles = Array.from(chatScrollEl.querySelectorAll('.bubble'));
             let newFound = 0;
@@ -204,9 +230,9 @@
                 if (/Incoming Call|Outgoing Call|تماس/.test(rawText)) {
                     let dur = rawText.match(/\d+:\d+/);
                     rawText = dur ? `<Voice Call: ${dur[0]}>` : `<Voice Call>`;
-                } else if (rawText === "GIF" || b.querySelector('video')) {
+                } else if (rawText === "GIF" || b.querySelector('video') || b.querySelector('[class*="gif"]')) {
                     rawText = "<Video/GIF>" + (rawText !== "GIF" && rawText ? " " + rawText : "");
-                } else if (!rawText && b.querySelector('img')) {
+                } else if (!rawText && (b.querySelector('img') || b.querySelector('canvas') || b.querySelector('[class*="photo"]'))) {
                     rawText = "<Photo>";
                 }
 
