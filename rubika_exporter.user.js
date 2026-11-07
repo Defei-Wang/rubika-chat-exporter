@@ -1,9 +1,9 @@
 // ==UserScript==
-// @name         Rubika Chat Exporter (Auto-Save & Wake-Lock) | استخراج چت روبیکا
+// @name         Rubika Chat Exporter | استخراج چت روبیکا
 // @namespace    https://github.com/Defei-Wang/rubika-chat-exporter
-// @version      2.2.0
-// @description  Export complete chat history from Rubika Web with periodic auto-save to disk, wake-lock (no sleep), and instant resume.
-// @description:fa استخراج و دانلود قطعی تاریخچه چت روبیکا با ذخیره خودکار دوره‌ای روی دیسک، جلوگیری از به خواب رفتن سیستم و قابلیت ادامه خودکار.
+// @version      2.2.1
+// @description  Export complete chat history from Rubika Web with hard media blocking, crash-proof vault, and wake-lock.
+// @description:fa استخراج و دانلود قطعی تاریخچه چت روبیکا با مسدودسازی واقعی رسانه‌ها و ذخیره‌سازی مطمئن.
 // @author       Defei Wang
 // @match        https://web.rubika.ir/*
 // @icon         https://web.rubika.ir/favicon.ico
@@ -15,7 +15,37 @@
 (function() {
     'use strict';
 
-    // 1. Prevent media limits and audio/video playback
+    // =========================================================================
+    // 1. HARD MEDIA BLOCKER (彻底切断图像与视频解码管线，绝不渲染具体内容)
+    // =========================================================================
+
+    // (A) 拦截 URL.createObjectURL：禁止生成图片与视频 Blob URL
+    const origCreateObjectURL = URL.createObjectURL;
+    URL.createObjectURL = function(blob) {
+        if (blob && blob.type && (blob.type.startsWith('image/') || blob.type.startsWith('video/') || blob.type.startsWith('audio/'))) {
+            // 返回一个 1x1 透明 GIF，彻底掐断真实图片的解码
+            return "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+        }
+        return origCreateObjectURL.apply(this, arguments);
+    };
+
+    // (B) 拦截 HTMLImageElement.prototype.src：阻止向 img 节点注入真实图片地址
+    const origImgSrcDescriptor = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
+    if (origImgSrcDescriptor && origImgSrcDescriptor.set) {
+        Object.defineProperty(HTMLImageElement.prototype, 'src', {
+            set: function(val) {
+                // 如果是 emoji 或系统纯色图，允许；其余聊天中的图片/动图一律清空
+                if (typeof val === 'string' && (val.includes('emoji') || val.startsWith('data:image/gif;base64,R0lGODlhAQAB'))) {
+                    return origImgSrcDescriptor.set.call(this, val);
+                }
+                return origImgSrcDescriptor.set.call(this, "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7");
+            },
+            get: origImgSrcDescriptor.get,
+            configurable: true
+        });
+    }
+
+    // (C) 彻底拦截 video/audio 节点生成
     const origCreate = document.createElement;
     document.createElement = function(tag, opt) {
         let t = typeof tag === 'string' ? tag.toLowerCase() : '';
@@ -31,17 +61,32 @@
 
     HTMLMediaElement.prototype.play = function() { return Promise.resolve(); };
 
-    // 2. Comprehensive CSS suppression
+    // (D) 全局注入硬样式：让任何漏网的媒体容器全透明或彻底隐藏
     const style = document.createElement('style');
-    style.id = 'rubika-exporter-styles';
+    style.id = 'rubika-hard-suppress-styles';
     style.textContent = `
-        img:not(.emoji), canvas, video, audio, .media-photo, .media-video, .media-round,
-        [class*="photo"], [class*="video"], [class*="gif"], [class*="sticker"],
-        [class*="media-container"], [style*="background-image"]:not(.emoji) { 
+        /* 彻底隐藏所有非 emoji 图片、canvas、视频、语音波形 */
+        img:not(.emoji), 
+        canvas, 
+        video, 
+        audio, 
+        .media-photo,
+        .media-video,
+        .media-round,
+        .bubble-media-wrapper,
+        [class*="photo"], 
+        [class*="video"], 
+        [class*="gif"], 
+        [class*="sticker"],
+        [class*="media-container"],
+        [style*="background-image"]:not(.emoji) { 
             display: none !important; 
+            background: none !important;
             background-image: none !important; 
-            animation: none !important; 
-            transition: none !important;
+            visibility: hidden !important;
+            opacity: 0 !important;
+            max-height: 0 !important;
+            height: 0 !important;
         }
 
         #rubika-app-btn {
@@ -65,9 +110,11 @@
     `;
     (document.head || document.documentElement).appendChild(style);
 
-    // 3. IndexedDB disk storage engine for guaranteed persistence
-    const DB_NAME = "RubikaVault";
-    const STORE_NAME = "chat_archive";
+    // =========================================================================
+    // 2. 本地静默硬盘保险库 (IndexedDB Vault - 崩溃不丢数据，零弹窗骚扰)
+    // =========================================================================
+    const DB_NAME = "RubikaSafeVault";
+    const STORE_NAME = "messages";
     function getDB() {
         return new Promise((resolve) => {
             const req = indexedDB.open(DB_NAME, 1);
@@ -111,16 +158,16 @@
         });
     }
 
-    // 4. Request System Wake Lock to prevent Windows sleep/hibernation
+    // =========================================================================
+    // 3. 操作系统防休眠锁 (Wake Lock API - 阻止电脑待机黑屏)
+    // =========================================================================
     let wakeLock = null;
     async function acquireWakeLock() {
         if ('wakeLock' in navigator) {
             try {
                 wakeLock = await navigator.wakeLock.request('screen');
-                console.log("☕ [Wake Lock Active] System sleep & hibernation prevented!");
-            } catch (err) {
-                console.warn("WakeLock request failed:", err);
-            }
+                console.log("☕ [Wake Lock Active] System will NOT sleep during export.");
+            } catch (err) {}
         }
     }
 
@@ -130,7 +177,9 @@
         }
     }
 
-    // 5. Add UI Button
+    // =========================================================================
+    // 4. UI 注入与核心抓取控制
+    // =========================================================================
     window.addEventListener('DOMContentLoaded', initUI);
     window.addEventListener('load', initUI);
 
@@ -138,7 +187,7 @@
         if (document.getElementById('rubika-app-btn') || document.getElementById('rubika-app-badge')) return;
         const btn = document.createElement('button');
         btn.id = 'rubika-app-btn';
-        btn.innerHTML = `<span>📥</span> <span>Export Chat (Auto-Save) / استخراج چت</span>`;
+        btn.innerHTML = `<span>📥</span> <span>Export Chat / استخراج چت</span>`;
         btn.onclick = startExport;
         document.body.appendChild(btn);
     }
@@ -151,27 +200,25 @@
             .find(el => el.querySelector('.bubble') && el.scrollHeight > el.clientHeight);
 
         if (!chatScrollEl) {
-            alert("⚠️ Please open a chat window first! / لطفاً ابتدا پنجره چت را باز کنید.");
+            alert("⚠️ Please open a chat conversation first! / لطفاً ابتدا صفحه چت را باز کنید.");
             initUI();
             return;
         }
 
-        // Prevent system sleep while running
         await acquireWakeLock();
 
         const store = new Map();
-        // Auto-resume: Load any previously captured messages from disk
+        // 自动断点续传：先从 IndexedDB 硬盘读取上一次存下的全部数据
         const cachedVault = await loadVault();
         for (let item of cachedVault) {
             store.set(item.id, item.line);
         }
-        console.log(`📦 Resumed with ${store.size} cached messages from disk.`);
+        console.log(`📦 Resumed: loaded ${store.size} messages from local vault.`);
 
         let pendingDateMids = new Set();
         let currentDate = "Scanning...";
         let isRunning = true;
-        let lastAutoSaveTime = performance.now();
-        let lastSavedSize = store.size;
+        let lastMonthCheck = "";
 
         const partnerEl = document.querySelector('.top .peer-title, .chat-info .name, .user-title, .chat-title');
         const partnerName = partnerEl?.textContent?.trim() || "Contact";
@@ -195,7 +242,7 @@
             }
             badge.innerHTML = `
                 <div style="font-weight: bold; font-size: 14px; margin-bottom: 2px;">
-                    ⚡ <b>Rubika V2.2:</b> <span style="color:#38bdf8;">${store.size}</span> msgs
+                    ⚡ <b>Rubika:</b> <span style="color:#38bdf8;">${store.size}</span> msgs
                     <span style="font-size: 11px; color:#4ade80; margin-left: 6px;">[${speed.toFixed(1)} msgs/s]</span>
                 </div>
                 <div style="font-size: 12px; color: #cbd5e1;">
@@ -203,7 +250,7 @@
                     <span style="font-size: 10px; color: #94a3b8; margin-left: 4px;">(DOM: ${domCount})</span>
                 </div>
                 <div style="font-size: 10px; color: #34d399; margin-top: 3px;">
-                    ☕ Anti-Sleep Active | 💾 Auto-saving to disk every 1000 msgs
+                    ☕ Anti-Sleep Active | 💾 Silent disk backup active
                 </div>
                 <div style="font-size: 10px; color: #38bdf8; margin-top: 5px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 4px;">
                     👉 Click to Stop & Download TXT / برای توقف و دانلود کلیک کنید
@@ -211,8 +258,8 @@
             `;
         }
 
-        // Automatic Checkpoint Download to prevent data loss
-        function downloadTxtCheckpoint(isFinal = false) {
+        // 规范的文件下载：只在必要时触发，绝不每隔几百条弹窗打扰
+        function downloadTxtFile(isMilestone = false) {
             let lines = Array.from(store.values());
             lines.sort((a, b) => {
                 let mA = a.match(/^\[(\d{4}-\d{2}-\d{2})?\s*(\d{1,2}:\d{2})?\]/);
@@ -227,22 +274,21 @@
             let a = document.createElement('a');
             a.href = url;
             let cleanName = partnerName.replace(/[\/\\?%*:|"<>]/g, '_');
-            let tag = isFinal ? "FINAL" : `CHECKPOINT_${currentDate.replace(/-/g, '')}`;
-            a.download = `rubika_${cleanName}_${tag}_${lines.length}_msgs.txt`;
+            let suffix = isMilestone ? `MILESTONE_${currentDate}` : `FINAL_${lines.length}_msgs`;
+            a.download = `rubika_${cleanName}_${suffix}.txt`;
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
-            console.log(`💾 [Auto-Saved to File] Saved ${lines.length} messages (Date: ${currentDate})!`);
         }
 
         function finishDownload() {
             isRunning = false;
             releaseWakeLock();
-            badge.innerHTML = `<b style="color:#4ade80;">✅ Saved ${store.size} msgs! Downloading final file...</b>`;
+            badge.innerHTML = `<b style="color:#4ade80;">✅ Saved ${store.size} msgs! Downloading file...</b>`;
             badge.style.borderColor = "#4ade80";
 
-            downloadTxtCheckpoint(true);
+            downloadTxtFile(false);
 
             setTimeout(() => {
                 badge.remove();
@@ -262,11 +308,8 @@
         }
 
         function scrapeDOM() {
+            // 物理移除残留节点
             chatScrollEl.querySelectorAll('video, audio, canvas').forEach(el => el.remove());
-            chatScrollEl.querySelectorAll('.bubble img:not(.emoji)').forEach(img => {
-                img.removeAttribute('src');
-                img.removeAttribute('srcset');
-            });
 
             let bubbles = Array.from(chatScrollEl.querySelectorAll('.bubble'));
             let newFound = 0;
@@ -341,22 +384,23 @@
                 pendingDateMids.clear();
             }
 
-            // Save increments to local disk IndexedDB
+            // 静默存入本地硬盘数据库（不弹窗、不卡顿、防丢失）
             if (newEntriesToVault.length > 0) {
                 saveVault(newEntriesToVault);
             }
 
-            // Keep only top 50 bubbles to avoid DOM slowdown
+            // 维持轻量 DOM（只留 40~60 个气泡）
             if (bubbles.length > 60) {
                 bubbles.slice(40).forEach(b => { if (!b.classList.contains('service') && b.dataset.extracted) b.remove(); });
             }
 
-            // Fallback Checkpoint: Auto-download file every 1500 messages or every 5 minutes
-            const now = performance.now();
-            if ((store.size - lastSavedSize >= 1500) || (now - lastAutoSaveTime >= 300000 && store.size > lastSavedSize)) {
-                downloadTxtCheckpoint(false);
-                lastSavedSize = store.size;
-                lastAutoSaveTime = now;
+            // 整月大里程碑备份（比如刚跨入 3月 或 刚跨入 2月 时，才静默下载一次切片保底，绝不频繁弹窗）
+            if (currentDate && currentDate.length >= 7) {
+                let thisMonth = currentDate.slice(0, 7);
+                if (lastMonthCheck && thisMonth !== lastMonthCheck) {
+                    downloadTxtFile(true);
+                }
+                lastMonthCheck = thisMonth;
             }
 
             return { newFound, domCount: chatScrollEl.querySelectorAll('.bubble').length };
@@ -369,7 +413,7 @@
                 let { newFound, domCount } = scrapeDOM();
                 renderBadge(domCount);
 
-                // Stop immediately if reaching early February 2026
+                // 抵达 2 月初自动终结并完整下载
                 if (currentDate && (currentDate.startsWith('2026-02-0') || currentDate.startsWith('2026-01') || currentDate < '2026-02-08')) {
                     console.log("🎯 Target early Feb reached!");
                     break;
