@@ -1,16 +1,22 @@
 /**
- * Rubika Full-Timeline Exporter V10 (DOM-Pruning, Zero-Reflow & Constant Speed)
- * استخراج‌کننده فوق‌سریع و هوشمند تاریخچه چت روبیکا با پاکسازی خودکار رسانه‌ها
+ * Rubika Full-Timeline Exporter V11 (Anti-Lag, Zero-Error & Smart Date Backfill)
+ * استخراج‌کننده فوق‌سریع و بدون خطا تاریخچه چت روبیکا (نسخه ۱۱)
  * 
  * Languages: English & فارسی (Persian)
  * License: MIT
  */
-(async function exportRubikaV10() {
+(async function exportRubikaV11() {
     console.clear();
-    console.log("🚀 [Rubika V10] Initializing DOM-Pruning Turbo Mode / در حال راه‌اندازی حالت توربو استخراج...");
+    console.log("🚀 [Rubika V11] Initializing Ultra-Fast Exporter / در حال راه‌اندازی استخراج‌کننده فوق‌سریع...");
 
-    // 1. Hide media & disable heavy animations via injected CSS
-    // مخفی‌سازی فایل‌های سنگین رسانه‌ای و انیمیشن‌ها جهت جلوگیری از افت فریم و فریز مرورگر
+    // 1. Suppress Angular's async checkMedia/addPreload2 appendChild errors on pruned DOM nodes
+    const origErrorHandler = window.onerror;
+    window.onerror = function(msg) {
+        if (typeof msg === 'string' && msg.includes('appendChild')) return true;
+        return origErrorHandler ? origErrorHandler.apply(this, arguments) : false;
+    };
+
+    // 2. Hide media & disable animations/transitions via CSS
     if (!document.getElementById('rubika-kill-media')) {
         const s = document.createElement('style');
         s.id = 'rubika-kill-media';
@@ -24,16 +30,14 @@
         document.head.appendChild(s);
     }
 
-    // 2. Prevent media elements from auto-playing audio/video
-    // مسدودسازی پخش خودکار صدا و ویدیو
+    // 3. Prevent media elements from auto-playing
     HTMLMediaElement.prototype.play = function() {
         this.muted = true;
         this.pause();
         return Promise.resolve();
     };
 
-    // 3. Immediately strip media sources and release WebMediaPlayer handles
-    // آزادسازی فوری حافظه و پخش‌کننده‌های رسانه‌ای مرورگر
+    // 4. Strip media sources safely (keep img shells so Angular's checkMedia won't throw null errors)
     function purgeAndMarkMedia(root = document) {
         root.querySelectorAll('video, audio').forEach(el => {
             try {
@@ -44,7 +48,7 @@
                 el.pause();
                 el.removeAttribute('src');
                 el.load();
-                el.remove();
+                el.remove(); // Must remove video/audio to avoid Chrome 7844 WebMediaPlayer limit
             } catch (e) {}
         });
 
@@ -54,14 +58,13 @@
                 if (bubble && !bubble.dataset.mediaType) {
                     bubble.dataset.mediaType = 'photo';
                 }
-                img.removeAttribute('src');
-                img.remove();
+                if (img.hasAttribute('src')) img.removeAttribute('src');
+                if (img.hasAttribute('srcset')) img.removeAttribute('srcset');
             } catch (e) {}
         });
     }
 
-    // 4. Locate the active chat scrollable container
-    // شناسایی خودکار کانتینر اصلی چت فعال
+    // 5. Locate active chat scrollable container
     const chatScrollEl = (function() {
         const scrollables = Array.from(document.querySelectorAll('div.scrollable-y, div.bubbles-inner, .bubbles, .sidebar-slider-item'));
         const valid = scrollables.filter(el => el.querySelector('.bubble') && el.scrollHeight > el.clientHeight);
@@ -78,15 +81,15 @@
     const partnerName = partnerNameEl?.textContent?.trim() || "Contact";
     const myName = "You";
 
-    // 5. Persistent Local Storage checkpointing
-    // ذخیره‌سازی خودکار در حافظه مرورگر برای جلوگیری از دست رفتن پیام‌ها در صورت بروز مشکل
+    // 6. Persistent LocalStorage Checkpointing (Compatible with V10 key)
     const STORAGE_KEY = `rubika_saved_chat_v10_${partnerName}`;
     let savedLocal = {};
     try { savedLocal = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); } catch (e) {}
     let collectedMessages = new Map(Object.entries(savedLocal));
+    let pendingDateMids = new Set(); // Track messages waiting for upper date banner
+    let unsavedCount = 0;
 
-    // 6. Floating Status UI (English & Persian)
-    // نشانگر وضعیت پیشرفت استخراج به زبان انگلیسی و فارسی
+    // 7. Floating Bilingual Status UI (English & Persian)
     let badge = document.getElementById('rubika-turbo-badge') || document.createElement('div');
     badge.id = 'rubika-turbo-badge';
     badge.style.cssText = `
@@ -96,7 +99,7 @@
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Vazirmatn", Tahoma, sans-serif;
         font-size: 13px; cursor: pointer; border: 1.5px solid #38bdf8;
         direction: ltr; text-align: left; line-height: 1.5;
-        transition: all 0.3s ease;
+        transition: border-color 0.3s ease;
     `;
     document.body.appendChild(badge);
 
@@ -104,14 +107,14 @@
     function updateBadge(enStatus, faStatus, domCount = 0) {
         badge.innerHTML = `
             <div style="font-weight: bold; font-size: 14px; margin-bottom: 4px;">
-                ⚡ <b>Rubika V10:</b> <span style="color:#38bdf8;">${collectedMessages.size}</span> msgs 
+                ⚡ <b>Rubika V11:</b> <span style="color:#38bdf8;">${collectedMessages.size}</span> msgs 
                 <span style="font-size: 11px; color:#94a3b8; font-weight: normal;">(DOM: ${domCount})</span>
             </div>
             <div style="font-size: 11px; color: #cbd5e1;">
-                ${enStatus || "Scrolling & Pruning..."}
+                ${enStatus || "Fetching historical messages..."}
             </div>
             <div style="font-size: 11px; color: #94a3b8; direction: rtl; text-align: right; margin-top: 3px; font-family: 'Vazirmatn', Tahoma, sans-serif;">
-                ${faStatus || "در حال اسکرول و دریافت پیام‌ها..."}
+                ${faStatus || "در حال واکشی پیام‌های قبلی..."}
             </div>
             <div style="font-size: 10px; color: #38bdf8; margin-top: 6px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 4px;">
                 👉 Click to Stop & Download TXT / برای توقف و دانلود کلیک کنید
@@ -126,8 +129,13 @@
     badge.onclick = stopAndExport;
     window.stopExport = stopAndExport;
 
-    function persistToDisk() {
-        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(Object.fromEntries(collectedMessages))); } catch (e) {}
+    // Throttled disk persistence: only save every 500 messages or on finish to prevent JSON.stringify lag at 7000+ msgs
+    function persistToDisk(force = false) {
+        if (!force && unsavedCount < 500) return;
+        try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(Object.fromEntries(collectedMessages)));
+            unsavedCount = 0;
+        } catch (e) {}
     }
 
     function parseDateBanner(text) {
@@ -143,8 +151,7 @@
         return text || "";
     }
 
-    // 7. Parse text & prune old processed DOM elements from the bottom to prevent layout reflow freezes
-    // استخراج متن و پاکسازی گره‌های پردازش شده قبلی از DOM جهت حفظ سرعت پایدار
+    // 8. Parse text, backfill dates & strictly prune DOM
     function processAndPruneDOM() {
         purgeAndMarkMedia(chatScrollEl);
 
@@ -159,7 +166,20 @@
                 return;
             }
 
+            // If we now have a date banner and this bubble was previously extracted without date, update it
             if (b.dataset.extracted === 'full') return;
+            if (b.dataset.extracted === 'partial' && activeDateStr && b.dataset.savedMid) {
+                let mid = b.dataset.savedMid;
+                let oldLine = collectedMessages.get(mid);
+                if (oldLine && oldLine.startsWith('[')) {
+                    collectedMessages.set(mid, `[${activeDateStr} ${oldLine.slice(1)}`);
+                    pendingDateMids.delete(mid);
+                    b.dataset.extracted = 'full';
+                    unsavedCount++;
+                }
+                return;
+            }
+            if (b.dataset.extracted === 'partial') return;
 
             let clone = b.cloneNode(true);
             let timeEl = clone.querySelector('.time, .bubble-time, .time-inner');
@@ -192,33 +212,50 @@
             let finalLine = `[${fullDate}] ${sender}: ${cleanMsg}`;
 
             let mid = b.getAttribute('data-mid') || b.getAttribute('data-id') || b.dataset.mid || b.id || `${timeStr}_${sender}_${cleanMsg}`;
+            b.dataset.savedMid = mid;
+
             if (!collectedMessages.has(mid)) {
                 collectedMessages.set(mid, finalLine);
+                if (!activeDateStr) pendingDateMids.add(mid);
                 newCount++;
+                unsavedCount++;
             } else if (activeDateStr && !collectedMessages.get(mid).startsWith(`[${activeDateStr}`)) {
                 collectedMessages.set(mid, finalLine);
+                pendingDateMids.delete(mid);
                 newCount++;
+                unsavedCount++;
             }
 
             b.dataset.extracted = activeDateStr ? 'full' : 'partial';
         });
 
-        // Pruning: Keep only top 80 bubbles in DOM if there are more than 120, avoiding 30k DOM crash
-        if (bubbles.length > 120) {
-            const toRemove = bubbles.slice(80);
+        // Backfill any pruned partial messages once their upper date banner finally scrolls into view
+        if (activeDateStr && pendingDateMids.size > 0) {
+            for (const mid of pendingDateMids) {
+                let line = collectedMessages.get(mid);
+                if (line && !/^\[\d{4}-\d{2}-\d{2}/.test(line)) {
+                    collectedMessages.set(mid, `[${activeDateStr} ${line.slice(1)}`);
+                    unsavedCount++;
+                }
+            }
+            pendingDateMids.clear();
+        }
+
+        // Strict Pruning: Remove ALL processed bubbles beyond top 55 (even 'partial' ones, preventing DOM 155+ buildup)
+        if (bubbles.length > 75) {
+            const toRemove = bubbles.slice(55);
             toRemove.forEach(b => {
-                if (!b.classList.contains('service') && b.dataset.extracted === 'full') {
+                if (!b.classList.contains('service') && b.dataset.extracted) {
                     b.remove();
                 }
             });
         }
 
-        if (newCount > 0) persistToDisk();
+        if (unsavedCount >= 500) persistToDisk(false);
         return { newCount, domRemaining: chatScrollEl.querySelectorAll('.bubble').length };
     }
 
-    // 8. Constant-speed upward scroll loop
-    // حلقه اسکرول صعودی با سرعت پایدار
+    // 9. Constant-speed upward scroll loop
     let stuckCount = 0;
     let lastTopBubbleSignature = "";
 
@@ -230,11 +267,10 @@
             domRemaining
         );
 
-        // Scroll to the very top to trigger Rubika's dynamic loading
         chatScrollEl.scrollTop = 0;
         chatScrollEl.dispatchEvent(new Event('scroll', { bubbles: true }));
 
-        await new Promise(r => setTimeout(r, 850));
+        await new Promise(r => setTimeout(r, 700));
 
         let resAfter = processAndPruneDOM();
         let firstBubble = chatScrollEl.querySelector('.bubble:not(.service)');
@@ -243,14 +279,13 @@
         if (newCount > 0 || resAfter.newCount > 0 || (currentTopSig && currentTopSig !== lastTopBubbleSignature)) {
             lastTopBubbleSignature = currentTopSig;
             stuckCount = 0;
-            // Slight scroll bounce to trigger subsequent scroll observers
-            chatScrollEl.scrollTop = 120;
+            chatScrollEl.scrollTop = 100;
             chatScrollEl.dispatchEvent(new Event('scroll', { bubbles: true }));
         } else {
             stuckCount++;
             chatScrollEl.scrollTop = 150;
             chatScrollEl.dispatchEvent(new Event('scroll', { bubbles: true }));
-            await new Promise(r => setTimeout(r, 150));
+            await new Promise(r => setTimeout(r, 140));
             chatScrollEl.scrollTop = 0;
             chatScrollEl.dispatchEvent(new Event('scroll', { bubbles: true }));
 
@@ -261,10 +296,10 @@
         }
     }
 
-    // 9. Download output file with bilingual status
-    // ذخیره و دانلود فایل متنی نهایی
+    // 10. Download output file with bilingual status
     function finishDownload() {
-        persistToDisk();
+        window.onerror = origErrorHandler;
+        persistToDisk(true); // Force final save to localStorage
         badge.innerHTML = `
             <div style="font-weight: bold; color: #4ade80; font-size: 14px;">
                 ✅ Saved ${collectedMessages.size} messages!
