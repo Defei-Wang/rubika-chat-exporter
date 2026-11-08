@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rubika Chat Exporter | استخراج چت روبیکا
 // @namespace    https://github.com/Defei-Wang/rubika-chat-exporter
-// @version      2.2.1
+// @version      2.3.0
 // @description  Export complete chat history from Rubika Web with hard media blocking, crash-proof vault, and wake-lock.
 // @description:fa استخراج و دانلود قطعی تاریخچه چت روبیکا با مسدودسازی واقعی رسانه‌ها و ذخیره‌سازی مطمئن.
 // @author       Defei Wang
@@ -34,8 +34,8 @@
     if (origImgSrcDescriptor && origImgSrcDescriptor.set) {
         Object.defineProperty(HTMLImageElement.prototype, 'src', {
             set: function(val) {
-                // 如果是 emoji 或系统纯色图，允许；其余聊天中的图片/动图一律清空
-                if (typeof val === 'string' && (val.includes('emoji') || val.startsWith('data:image/gif;base64,R0lGODlhAQAB'))) {
+                // 如果是 emoji，允许；其余聊天中的图片/动图一律替换为 1x1 透明像素
+                if (typeof val === 'string' && val.includes('emoji')) {
                     return origImgSrcDescriptor.set.call(this, val);
                 }
                 return origImgSrcDescriptor.set.call(this, "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7");
@@ -61,7 +61,31 @@
 
     HTMLMediaElement.prototype.play = function() { return Promise.resolve(); };
 
-    // (D) 全局注入硬样式：让任何漏网的媒体容器全透明或彻底隐藏
+    // (D) 全局 MutationObserver 动态销毁媒体节点
+    try {
+        const mediaObserver = new MutationObserver((mutations) => {
+            for (let m of mutations) {
+                for (let node of m.addedNodes) {
+                    if (node.nodeType === 1) {
+                        if (node.tagName === 'IMG' && !node.classList.contains('emoji')) {
+                            node.src = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+                            node.style.display = 'none';
+                        } else if (node.tagName === 'VIDEO' || node.tagName === 'AUDIO' || node.tagName === 'CANVAS') {
+                            node.remove();
+                        } else {
+                            node.querySelectorAll('img:not(.emoji), video, audio, canvas').forEach(el => {
+                                if (el.tagName === 'IMG') el.src = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+                                el.remove();
+                            });
+                        }
+                    }
+                }
+            }
+        });
+        mediaObserver.observe(document.documentElement, { childList: true, subtree: true });
+    } catch(e) {}
+
+    // (E) 全局注入硬样式：让任何漏网的媒体容器全透明或彻底隐藏
     const style = document.createElement('style');
     style.id = 'rubika-hard-suppress-styles';
     style.textContent = `
@@ -220,9 +244,13 @@
         let isRunning = true;
         let lastMonthCheck = "";
 
-        const partnerEl = document.querySelector('.top .peer-title, .chat-info .name, .user-title, .chat-title');
-        const partnerName = partnerEl?.textContent?.trim() || "Contact";
-        const myName = "You";
+        // 严格定位当前打开聊天的标题（避免匹配侧边栏吸顶的广告频道）
+        let partnerEl = document.querySelector('.chat-header .peer-title, .chat-info .peer-title, .top-header .peer-title, .chat-header .name, .chat-info .name, .sidebar-header .peer-title');
+        let partnerName = partnerEl?.textContent?.trim() || "Zari";
+        if (/طلا|درآمد|کانال|تبلیغ|Contact/.test(partnerName) || !partnerName) {
+            partnerName = "Zari";
+        }
+        const myName = "Difei";
 
         const badge = document.createElement('div');
         badge.id = 'rubika-app-badge';
@@ -258,12 +286,12 @@
             `;
         }
 
-        // 规范的文件下载：只在必要时触发，绝不每隔几百条弹窗打扰
+        // 规范的文件下载：只在必要时触发，确保按时间正序排列（从早到晚）
         function downloadTxtFile(isMilestone = false) {
             let lines = Array.from(store.values());
             lines.sort((a, b) => {
-                let mA = a.match(/^\[(\d{4}-\d{2}-\d{2})?\s*(\d{1,2}:\d{2})?\]/);
-                let mB = b.match(/^\[(\d{4}-\d{2}-\d{2})?\s*(\d{1,2}:\d{2})?\]/);
+                let mA = a.match(/^\[(\d{4}-\d{2}-\d{2})?\s*(\d{1,2}:\d{2})?/);
+                let mB = b.match(/^\[(\d{4}-\d{2}-\d{2})?\s*(\d{1,2}:\d{2})?/);
                 let sA = `${mA?.[1]||"1970-01-01"} ${(mA?.[2]||"00:00").padStart(5,'0')}`;
                 let sB = `${mB?.[1]||"1970-01-01"} ${(mB?.[2]||"00:00").padStart(5,'0')}`;
                 return sA.localeCompare(sB);
@@ -339,7 +367,9 @@
 
                 let clone = b.cloneNode(true);
                 let timeEl = clone.querySelector('.time, .bubble-time, .time-inner');
-                let timeStr = timeEl ? (timeEl.getAttribute('title') || timeEl.textContent.trim()) : "";
+                let rawTime = timeEl ? (timeEl.getAttribute('title') || timeEl.textContent.trim()) : "";
+                let timeMatch = rawTime.match(/(\d{1,2}:\d{2})/);
+                let timeStr = timeMatch ? timeMatch[1] : "";
                 if (timeEl) timeEl.remove();
                 clone.querySelectorAll('.reply, .reply-wrapper, [class*="reply"], .avatar').forEach(el => el.remove());
 
@@ -350,6 +380,9 @@
                 if (/Incoming Call|Outgoing Call|تماس/.test(rawText)) {
                     let dur = rawText.match(/\d+:\d+/);
                     rawText = dur ? `<Voice Call: ${dur[0]}>` : `<Voice Call>`;
+                } else if (rawText.includes('VOICE_') || b.querySelector('.audio, .voice')) {
+                    let dur = rawText.match(/(\d+:\d{2})/);
+                    rawText = dur ? `<Voice: ${dur[1]}>` : `<Voice>`;
                 } else if (rawText === "GIF" || b.querySelector('video') || b.querySelector('[class*="gif"]')) {
                     rawText = "<Video/GIF>" + (rawText !== "GIF" && rawText ? " " + rawText : "");
                 } else if (!rawText && (b.querySelector('img') || b.querySelector('canvas') || b.querySelector('[class*="photo"]'))) {
